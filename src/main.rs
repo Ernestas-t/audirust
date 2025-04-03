@@ -1,21 +1,21 @@
 use crossterm::{
     event::{self, Event, KeyCode},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
     prelude::*,
-    style::{Color, Style, Stylize},
-    symbols,
-    widgets::{Block, Borders, Gauge, Paragraph, Wrap, canvas::Canvas},
+    style::{Color, Style},
+    widgets::{Block, Borders, Gauge, Paragraph},
 };
+use rodio::dynamic_mixer::mixer;
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
-use rodio::dynamic_mixer::{DynamicMixerController, mixer};
 use std::{
+    collections::VecDeque,
     fs::File,
     io::{self, BufReader, stdout},
-    time::{Duration, Instant},
     sync::Arc,
+    time::{Duration, Instant},
 };
 
 // Represents the current state of the audio player
@@ -29,17 +29,20 @@ struct AudioPlayer {
     reverb_delay: f32,
     messages: Vec<String>,
     last_played: Option<Instant>,
-    waveform_values: Vec<f32>, // Values for sound wave visualization
+    waveform_values: Vec<f32>,    // Values for sound wave visualization
+    audio_samples: VecDeque<f32>, // Use a fixed-size buffer for recent samples
 }
 
 impl AudioPlayer {
     // Initialize a new audio player
     fn new(stream_handle: OutputStreamHandle) -> Self {
         // Initialize with some random waveform data
-        let waveform = (0..100).map(|i| {
-            // Start with no wave
-            0.0
-        }).collect();
+        let waveform = (0..100)
+            .map(|i| {
+                // Start with no wave
+                0.0
+            })
+            .collect();
 
         AudioPlayer {
             stream_handle,
@@ -52,9 +55,10 @@ impl AudioPlayer {
             messages: Vec::new(),
             last_played: None,
             waveform_values: waveform,
+            audio_samples: VecDeque::new(), // Initialize empty
         }
     }
-    
+
     // Add a message to the log
     fn add_message(&mut self, message: &str) {
         self.messages.push(message.to_string());
@@ -63,29 +67,27 @@ impl AudioPlayer {
             self.messages.remove(0);
         }
     }
-    
+
     // Play a sound file (looping or non-looping)
     fn play_sound(&mut self, file_path: &str, is_looping: bool) -> io::Result<()> {
         // Create a new sink for the sound
         if let Ok(sink) = Sink::try_new(&self.stream_handle) {
             let sink = Arc::new(sink);
-            
+
             // Create a mixer for combining multiple audio sources
             // 2 channels (stereo), 44100 Hz sample rate
             let (mixer_controller, mixer) = mixer(2, 44100);
-            
+
             // Process main audio and add to mixer
             if let Ok(file) = File::open(file_path) {
                 let file_buf = BufReader::new(file);
                 if let Ok(source) = Decoder::new(file_buf) {
                     // Apply base effects to main sound
-                    let main_source = source
-                        .speed(self.playback_speed)
-                        .amplify(self.volume);
-                    
+                    let main_source = source.speed(self.playback_speed).amplify(self.volume);
+
                     // Add to mixer
                     mixer_controller.add(main_source);
-                    
+
                     // Add reverb effect if enabled
                     if self.reverb_enabled {
                         // Open a second instance of the file for reverb
@@ -97,13 +99,13 @@ impl AudioPlayer {
                                     .speed(self.playback_speed)
                                     .amplify(self.volume * 0.4)
                                     .delay(Duration::from_secs_f32(self.reverb_delay));
-                                
+
                                 // Add reverb to mixer
                                 mixer_controller.add(reverb);
                             }
                         }
                     }
-                    
+
                     // Apply low-pass filter to the entire mix if needed
                     if self.lowpass_cutoff < 20000 {
                         // Convert mixer's output to f32 samples
@@ -113,23 +115,26 @@ impl AudioPlayer {
                         // No filter needed
                         sink.append(mixer);
                     }
-                    
+
                     // Store the sink and mixer controller to keep them alive
                     self.active_sinks.push((Arc::clone(&sink), is_looping));
-                    
+
                     // Mark the time we last played a sound
                     self.last_played = Some(Instant::now());
                 } else {
                     self.add_message("Error decoding audio file");
                 }
             } else {
-                self.add_message(&format!("Error opening file: Make sure {} exists!", file_path));
+                self.add_message(&format!(
+                    "Error opening file: Make sure {} exists!",
+                    file_path
+                ));
             }
         }
-        
+
         Ok(())
     }
-    
+
     // Change the playback speed/pitch
     fn change_pitch(&mut self, increase: bool) {
         if increase {
@@ -138,7 +143,7 @@ impl AudioPlayer {
             self.playback_speed = (self.playback_speed - 0.1).max(0.1);
         }
     }
-    
+
     // Change volume
     fn change_volume(&mut self, increase: bool) {
         if increase {
@@ -147,7 +152,7 @@ impl AudioPlayer {
             self.volume = (self.volume - 0.1).max(0.0);
         }
     }
-    
+
     // Change low-pass filter
     fn change_lowpass(&mut self, increase: bool) {
         if increase {
@@ -156,12 +161,12 @@ impl AudioPlayer {
             self.lowpass_cutoff = (self.lowpass_cutoff - 500).max(500);
         }
     }
-    
+
     // Toggle reverb effect
     fn toggle_reverb(&mut self) {
         self.reverb_enabled = !self.reverb_enabled;
     }
-    
+
     // Update the looping sounds if needed
     fn update_looping_sounds(&self) {
         // Manually handle looping by checking if a looping sink is empty
@@ -169,19 +174,17 @@ impl AudioPlayer {
             if *is_looping && sink.empty() {
                 // Create new mixer for looping sound
                 let (mixer_controller, mixer) = mixer(2, 44100);
-                
+
                 // Open and decode the sound file
                 if let Ok(file) = File::open("example.wav") {
                     let file_buf = BufReader::new(file);
                     if let Ok(source) = Decoder::new(file_buf) {
                         // Apply effects to main sound
-                        let main_source = source
-                            .speed(self.playback_speed)
-                            .amplify(self.volume);
-                        
+                        let main_source = source.speed(self.playback_speed).amplify(self.volume);
+
                         // Add to mixer
                         mixer_controller.add(main_source);
-                        
+
                         // Add reverb if enabled
                         if self.reverb_enabled {
                             if let Ok(reverb_file) = File::open("example.wav") {
@@ -191,15 +194,16 @@ impl AudioPlayer {
                                         .speed(self.playback_speed)
                                         .amplify(self.volume * 0.4)
                                         .delay(Duration::from_secs_f32(self.reverb_delay));
-                                    
+
                                     mixer_controller.add(reverb);
                                 }
                             }
                         }
-                        
+
                         // Apply final processing and add to sink
                         if self.lowpass_cutoff < 20000 {
-                            let filtered_mix = mixer.convert_samples().low_pass(self.lowpass_cutoff);
+                            let filtered_mix =
+                                mixer.convert_samples().low_pass(self.lowpass_cutoff);
                             sink.append(filtered_mix);
                         } else {
                             sink.append(mixer);
@@ -209,18 +213,22 @@ impl AudioPlayer {
             }
         }
     }
-    
+
     // Clean up finished sounds
     fn cleanup_finished(&mut self) {
         // Only remove non-looping sinks that are empty
-        self.active_sinks.retain(|(sink, is_looping)| *is_looping || !sink.empty());
+        self.active_sinks
+            .retain(|(sink, is_looping)| *is_looping || !sink.empty());
     }
-    
+
     // Update waveform visualization
     fn update_waveform(&mut self) {
         // Reset waveform if no active sounds and last played was over 5 seconds ago
-        if self.active_sinks.is_empty() && 
-           self.last_played.map_or(true, |t| t.elapsed() > Duration::from_secs(5)) {
+        if self.active_sinks.is_empty()
+            && self
+                .last_played
+                .map_or(true, |t| t.elapsed() > Duration::from_secs(5))
+        {
             for val in &mut self.waveform_values {
                 *val = *val * 0.9; // Fade out
                 if *val < 0.01 {
@@ -229,47 +237,96 @@ impl AudioPlayer {
             }
             return;
         }
-        
-        // Generate new waveform data based on current player state
-        let time = Instant::now().elapsed().as_secs_f64();
+
         let is_active = !self.active_sinks.is_empty();
-        
-        for (i, val) in self.waveform_values.iter_mut().enumerate() {
-            if is_active {
-                let x = i as f64 / 10.0;
-                let base_wave = (time * 5.0 * self.playback_speed as f64 + x).sin() * self.volume as f64;
-                
-                // Apply "visual" filter similar to lowpass
-                let filter_factor = if self.lowpass_cutoff < 20000 {
-                    self.lowpass_cutoff as f64 / 20000.0
+
+        // Use actual audio samples if available
+        if !self.audio_samples.is_empty() {
+            // Get the lengths before iteration to avoid borrowing issues
+            let waveform_len = self.waveform_values.len();
+            let samples_len = self.audio_samples.len();
+
+            // Map the audio samples to the waveform values
+            for (i, val) in self.waveform_values.iter_mut().enumerate() {
+                if is_active {
+                    // Calculate an appropriate index into the audio_samples buffer
+                    let sample_index = (i * samples_len / waveform_len).min(samples_len - 1);
+
+                    // Get the sample value and apply volume
+                    let sample = self.audio_samples[sample_index].abs() * self.volume;
+
+                    // Apply "visual" filter similar to lowpass
+                    let filter_factor = if self.lowpass_cutoff < 20000 {
+                        self.lowpass_cutoff as f32 / 20000.0
+                    } else {
+                        1.0
+                    };
+
+                    // Scale the sample based on current effects
+                    *val = (sample * filter_factor).min(1.0);
+
+                    // Add visual reverb effect if enabled
+                    if self.reverb_enabled {
+                        // Get a slightly offset sample for reverb effect
+                        let reverb_index =
+                            (sample_index + (self.reverb_delay * 44100.0) as usize) % samples_len;
+                        let reverb_sample =
+                            self.audio_samples[reverb_index].abs() * 0.3 * self.volume;
+                        *val = (*val + reverb_sample).min(1.0);
+                    }
                 } else {
-                    1.0
-                };
-                
-                // Add harmonic for visuals
-                let harmonic = (time * 10.0 * self.playback_speed as f64 + x).sin() * 0.3 * filter_factor;
-                
-                // Combine waves
-                *val = (base_wave + harmonic).abs() as f32 * self.volume;
-                
-                // Add visual reverb effect
-                if self.reverb_enabled {
-                    let reverb_wave = (time * 5.0 * self.playback_speed as f64 + x - 0.5).sin() * 0.3 * self.volume as f64;
-                    *val += reverb_wave.abs() as f32;
+                    // Fade out
+                    *val = *val * 0.95;
+                    if *val < 0.01 {
+                        *val = 0.0;
+                    }
                 }
-                
-                // Normalize
-                *val = (*val * 0.7).min(1.0);
-            } else {
-                // Fade out
-                *val = *val * 0.95;
-                if *val < 0.01 {
-                    *val = 0.0;
+            }
+        } else {
+            // Fall back to simulated waveform if no audio samples available
+            let time = Instant::now().elapsed().as_secs_f64();
+
+            for (i, val) in self.waveform_values.iter_mut().enumerate() {
+                if is_active {
+                    let x = i as f64 / 10.0;
+                    let base_wave =
+                        (time * 5.0 * self.playback_speed as f64 + x).sin() * self.volume as f64;
+
+                    // Apply "visual" filter similar to lowpass
+                    let filter_factor = if self.lowpass_cutoff < 20000 {
+                        self.lowpass_cutoff as f64 / 20000.0
+                    } else {
+                        1.0
+                    };
+
+                    // Add harmonic for visuals
+                    let harmonic =
+                        (time * 10.0 * self.playback_speed as f64 + x).sin() * 0.3 * filter_factor;
+
+                    // Combine waves
+                    *val = (base_wave + harmonic).abs() as f32 * self.volume;
+
+                    // Add visual reverb effect
+                    if self.reverb_enabled {
+                        let reverb_wave = (time * 5.0 * self.playback_speed as f64 + x - 0.5).sin()
+                            * 0.3
+                            * self.volume as f64;
+                        *val += reverb_wave.abs() as f32;
+                    }
+
+                    // Normalize
+                    *val = (*val * 0.7).min(1.0);
+                } else {
+                    // Fade out
+                    *val = *val * 0.95;
+                    if *val < 0.01 {
+                        *val = 0.0;
+                    }
                 }
             }
         }
     }
-    
+
     // Is any sound currently playing?
     fn is_playing(&self) -> bool {
         !self.active_sinks.is_empty()
@@ -296,34 +353,34 @@ impl App {
         match key_code {
             KeyCode::Char('p') => {
                 self.player.play_sound("example.wav", false)?;
-            },
+            }
             KeyCode::Char('r') => {
                 self.player.play_sound("example.wav", true)?;
-            },
+            }
             KeyCode::Char('j') => {
                 self.player.change_pitch(false);
-            },
+            }
             KeyCode::Char('k') => {
                 self.player.change_pitch(true);
-            },
+            }
             KeyCode::Char('v') => {
                 self.player.change_volume(false);
-            },
+            }
             KeyCode::Char('b') => {
                 self.player.change_volume(true);
-            },
+            }
             KeyCode::Char('f') => {
                 self.player.change_lowpass(false);
-            },
+            }
             KeyCode::Char('g') => {
                 self.player.change_lowpass(true);
-            },
+            }
             KeyCode::Char('e') => {
                 self.player.toggle_reverb();
-            },
+            }
             KeyCode::Char('q') => {
                 self.should_quit = true;
-            },
+            }
             _ => {}
         }
         Ok(())
@@ -333,7 +390,7 @@ impl App {
         // Update app state
         self.player.update_looping_sounds();
         self.player.cleanup_finished();
-        
+
         // Update waveform every 50ms
         if self.last_update.elapsed() > Duration::from_millis(50) {
             self.player.update_waveform();
@@ -348,26 +405,30 @@ fn ui(f: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .constraints(
             [
-                Constraint::Length(3),  // Title
-                Constraint::Length(3),  // Volume
-                Constraint::Length(3),  // Speed
-                Constraint::Length(3),  // Effects area
-                Constraint::Length(3),  // Controls
-                Constraint::Min(0),     // Waveform visualization (now larger at the bottom)
+                Constraint::Length(3), // Title
+                Constraint::Length(3), // Volume
+                Constraint::Length(3), // Speed
+                Constraint::Length(3), // Effects area
+                Constraint::Length(3), // Controls
+                Constraint::Min(0),    // Waveform visualization (now larger at the bottom)
             ]
             .as_ref(),
         )
-        .split(f.size());
+        .split(f.area());
 
     // Title with playback status
-    let status = if app.player.is_playing() { 
-        " [PLAYING]" 
-    } else { 
-        "" 
+    let status = if app.player.is_playing() {
+        " [PLAYING]"
+    } else {
+        ""
     };
-    
+
     let title = Paragraph::new(format!("Audio Player{}", status))
-        .block(Block::default().borders(Borders::ALL).title("TUI Audio Player"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("TUI Audio Player"),
+        )
         .style(Style::default().fg(Color::Cyan))
         .alignment(Alignment::Center);
     f.render_widget(title, chunks[0]);
@@ -384,7 +445,11 @@ fn ui(f: &mut Frame, app: &App) {
     // Speed gauge
     let speed_percent = (app.player.playback_speed / 3.0 * 100.0) as u16;
     let speed_gauge = Gauge::default()
-        .block(Block::default().borders(Borders::ALL).title("Playback Speed"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Playback Speed"),
+        )
         .gauge_style(Style::default().fg(Color::Green))
         .percent(speed_percent)
         .label(format!("{:.1}x", app.player.playback_speed));
@@ -402,27 +467,31 @@ fn ui(f: &mut Frame, app: &App) {
     } else {
         format!("{}Hz", app.player.lowpass_cutoff)
     };
-    
+
     let filter_percent = if app.player.lowpass_cutoff >= 20000 {
         100
     } else {
         (app.player.lowpass_cutoff as f32 / 20000.0 * 100.0) as u16
     };
-    
+
     let lowpass_gauge = Gauge::default()
-        .block(Block::default().borders(Borders::ALL).title("Low-Pass Filter"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Low-Pass Filter"),
+        )
         .gauge_style(Style::default().fg(Color::Blue))
         .percent(filter_percent)
         .label(filter_text);
     f.render_widget(lowpass_gauge, effects_chunks[0]);
-    
+
     // Simplified reverb indicator
     let reverb_title = if app.player.reverb_enabled {
         "Reverb: ON"
     } else {
         "Reverb: OFF"
     };
-    
+
     let reverb_gauge = Gauge::default()
         .block(Block::default().borders(Borders::ALL).title(reverb_title))
         .gauge_style(if app.player.reverb_enabled {
@@ -431,22 +500,36 @@ fn ui(f: &mut Frame, app: &App) {
             Style::default().fg(Color::DarkGray)
         })
         .percent(if app.player.reverb_enabled { 100 } else { 0 })
-        .label(if app.player.reverb_enabled { "Enabled" } else { "Disabled" });
-    
+        .label(if app.player.reverb_enabled {
+            "Enabled"
+        } else {
+            "Disabled"
+        });
+
     f.render_widget(reverb_gauge, effects_chunks[1]);
 
     // Controls with status
     let playing_info = if app.player.active_sinks.is_empty() {
         String::new()
     } else {
-        let loop_count = app.player.active_sinks.iter().filter(|(_, is_loop)| *is_loop).count();
-        format!(" | Playing: {} (Loops: {})", app.player.active_sinks.len(), loop_count)
+        let loop_count = app
+            .player
+            .active_sinks
+            .iter()
+            .filter(|(_, is_loop)| *is_loop)
+            .count();
+        format!(
+            " | Playing: {} (Loops: {})",
+            app.player.active_sinks.len(),
+            loop_count
+        )
     };
-    
-    let controls_text = 
-        format!("p: Play  r: Loop  j/k: Pitch⬇/⬆  v/b: Vol⬇/⬆  f/g: Filter⬇/⬆  e: Reverb  q: Quit{}", 
-                playing_info);
-    
+
+    let controls_text = format!(
+        "p: Play  r: Loop  j/k: Pitch⬇/⬆  v/b: Vol⬇/⬆  f/g: Filter⬇/⬆  e: Reverb  q: Quit{}",
+        playing_info
+    );
+
     let controls = Paragraph::new(controls_text)
         .style(Style::default().fg(Color::White))
         .block(Block::default().borders(Borders::ALL).title("Controls"))
@@ -457,13 +540,15 @@ fn ui(f: &mut Frame, app: &App) {
     let wave_block = Block::default()
         .borders(Borders::ALL)
         .title("Sound Visualization");
-    
+
     // Create a sparkline for audio waveform
-    let waveform_data: Vec<u64> = app.player.waveform_values
+    let waveform_data: Vec<u64> = app
+        .player
+        .waveform_values
         .iter()
         .map(|&v| (v * 100.0) as u64)
         .collect();
-    
+
     let sparkline = ratatui::widgets::Sparkline::default()
         .block(wave_block)
         .data(&waveform_data)
@@ -472,7 +557,7 @@ fn ui(f: &mut Frame, app: &App) {
         } else {
             Style::default().fg(Color::DarkGray)
         });
-    
+
     f.render_widget(sparkline, chunks[5]);
 }
 
@@ -495,7 +580,7 @@ fn main() -> io::Result<()> {
             return Ok(());
         }
     };
-    
+
     // Create the app state
     let mut app = App::new(stream_handle);
 
@@ -504,7 +589,8 @@ fn main() -> io::Result<()> {
         terminal.draw(|f| ui(f, &app))?;
 
         // Handle key events
-        if event::poll(Duration::from_millis(16))? { // ~60fps
+        if event::poll(Duration::from_millis(16))? {
+            // ~60fps
             if let Event::Key(key) = event::read()? {
                 app.handle_key_events(key.code)?;
             }
