@@ -1,13 +1,22 @@
+use crossterm::{
+    event::{self, Event, KeyCode},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use ratatui::{
+    prelude::*,
+    style::{Color, Style, Stylize},
+    symbols,
+    widgets::{Block, Borders, Gauge, Paragraph, Wrap, canvas::Canvas},
+};
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 use rodio::dynamic_mixer::{DynamicMixerController, mixer};
-use std::fs::File;
-use std::io::{self, BufReader};
-use std::time::Duration;
-use crossterm::event::{self, Event, KeyCode};
-use crossterm::terminal::{enable_raw_mode, disable_raw_mode, Clear, ClearType};
-use crossterm::execute;
-use std::io::stdout;
-use std::sync::Arc;
+use std::{
+    fs::File,
+    io::{self, BufReader, stdout},
+    time::{Duration, Instant},
+    sync::Arc,
+};
 
 // Represents the current state of the audio player
 struct AudioPlayer {
@@ -18,12 +27,20 @@ struct AudioPlayer {
     lowpass_cutoff: u32,
     reverb_enabled: bool,
     reverb_delay: f32,
-    current_line: u16,
+    messages: Vec<String>,
+    last_played: Option<Instant>,
+    waveform_values: Vec<f32>, // Values for sound wave visualization
 }
 
 impl AudioPlayer {
     // Initialize a new audio player
     fn new(stream_handle: OutputStreamHandle) -> Self {
+        // Initialize with some random waveform data
+        let waveform = (0..100).map(|i| {
+            // Start with no wave
+            0.0
+        }).collect();
+
         AudioPlayer {
             stream_handle,
             active_sinks: Vec::new(),
@@ -32,21 +49,23 @@ impl AudioPlayer {
             lowpass_cutoff: 20000,
             reverb_enabled: false,
             reverb_delay: 0.06,
-            current_line: 10,
+            messages: Vec::new(),
+            last_played: None,
+            waveform_values: waveform,
+        }
+    }
+    
+    // Add a message to the log
+    fn add_message(&mut self, message: &str) {
+        self.messages.push(message.to_string());
+        // Keep only the last 5 messages
+        if self.messages.len() > 5 {
+            self.messages.remove(0);
         }
     }
     
     // Play a sound file (looping or non-looping)
     fn play_sound(&mut self, file_path: &str, is_looping: bool) -> io::Result<()> {
-        // Move to next line for new output
-        execute!(stdout(), crossterm::cursor::MoveTo(0, self.current_line))?;
-        if is_looping {
-            println!("Playing looping sound...");
-        } else {
-            println!("Playing sound once...");
-        }
-        self.current_line += 1;
-        
         // Create a new sink for the sound
         if let Ok(sink) = Sink::try_new(&self.stream_handle) {
             let sink = Arc::new(sink);
@@ -98,23 +117,13 @@ impl AudioPlayer {
                     // Store the sink and mixer controller to keep them alive
                     self.active_sinks.push((Arc::clone(&sink), is_looping));
                     
-                    execute!(stdout(), crossterm::cursor::MoveTo(0, self.current_line))?;
-                    println!("Sound is playing! Effects: Pitch={:.1}x, Vol={:.1}x, LP={}Hz, Reverb={}",
-                        self.playback_speed, 
-                        self.volume, 
-                        if self.lowpass_cutoff < 20000 { self.lowpass_cutoff.to_string() } else { "OFF".to_string() },
-                        if self.reverb_enabled { "ON" } else { "OFF" }
-                    );
-                    self.current_line += 1;
+                    // Mark the time we last played a sound
+                    self.last_played = Some(Instant::now());
                 } else {
-                    execute!(stdout(), crossterm::cursor::MoveTo(0, self.current_line))?;
-                    println!("Error decoding audio file");
-                    self.current_line += 1;
+                    self.add_message("Error decoding audio file");
                 }
             } else {
-                execute!(stdout(), crossterm::cursor::MoveTo(0, self.current_line))?;
-                println!("Error opening file: Make sure {} exists!", file_path);
-                self.current_line += 1;
+                self.add_message(&format!("Error opening file: Make sure {} exists!", file_path));
             }
         }
         
@@ -122,60 +131,35 @@ impl AudioPlayer {
     }
     
     // Change the playback speed/pitch
-    fn change_pitch(&mut self, increase: bool) -> io::Result<()> {
+    fn change_pitch(&mut self, increase: bool) {
         if increase {
             self.playback_speed = (self.playback_speed + 0.1).min(3.0);
-            execute!(stdout(), crossterm::cursor::MoveTo(0, self.current_line))?;
-            println!("Pitch increased to {:.1}x", self.playback_speed);
         } else {
             self.playback_speed = (self.playback_speed - 0.1).max(0.1);
-            execute!(stdout(), crossterm::cursor::MoveTo(0, self.current_line))?;
-            println!("Pitch decreased to {:.1}x", self.playback_speed);
         }
-        self.current_line += 1;
-        Ok(())
     }
     
     // Change volume
-    fn change_volume(&mut self, increase: bool) -> io::Result<()> {
+    fn change_volume(&mut self, increase: bool) {
         if increase {
             self.volume = (self.volume + 0.1).min(2.0);
-            execute!(stdout(), crossterm::cursor::MoveTo(0, self.current_line))?;
-            println!("Volume increased to {:.1}x", self.volume);
         } else {
             self.volume = (self.volume - 0.1).max(0.0);
-            execute!(stdout(), crossterm::cursor::MoveTo(0, self.current_line))?;
-            println!("Volume decreased to {:.1}x", self.volume);
         }
-        self.current_line += 1;
-        Ok(())
     }
     
     // Change low-pass filter
-    fn change_lowpass(&mut self, increase: bool) -> io::Result<()> {
+    fn change_lowpass(&mut self, increase: bool) {
         if increase {
             self.lowpass_cutoff = (self.lowpass_cutoff + 500).min(20000);
         } else {
             self.lowpass_cutoff = (self.lowpass_cutoff - 500).max(500);
         }
-        
-        execute!(stdout(), crossterm::cursor::MoveTo(0, self.current_line))?;
-        if self.lowpass_cutoff >= 20000 {
-            println!("Low-pass filter: OFF");
-        } else {
-            println!("Low-pass filter: {}Hz", self.lowpass_cutoff);
-        }
-        self.current_line += 1;
-        Ok(())
     }
     
     // Toggle reverb effect
-    fn toggle_reverb(&mut self) -> io::Result<()> {
+    fn toggle_reverb(&mut self) {
         self.reverb_enabled = !self.reverb_enabled;
-        execute!(stdout(), crossterm::cursor::MoveTo(0, self.current_line))?;
-        println!("Reverb effect: {}", if self.reverb_enabled { "ON" } else { "OFF" });
-        self.current_line += 1;
-        Ok(())
     }
     
     // Update the looping sounds if needed
@@ -231,117 +215,314 @@ impl AudioPlayer {
         // Only remove non-looping sinks that are empty
         self.active_sinks.retain(|(sink, is_looping)| *is_looping || !sink.empty());
     }
-}
-
-// Display the user interface
-fn display_ui() -> io::Result<()> {
-    execute!(stdout(), Clear(ClearType::All))?;
-    execute!(stdout(), crossterm::cursor::MoveTo(0, 0))?;
-    println!("Audio Player");
-    execute!(stdout(), crossterm::cursor::MoveTo(0, 1))?;
-    println!("Press 'p' to play sound");
-    execute!(stdout(), crossterm::cursor::MoveTo(0, 2))?;
-    println!("Press 'r' to play looping sound");
-    execute!(stdout(), crossterm::cursor::MoveTo(0, 3))?;
-    println!("Press 'j' to decrease pitch, 'k' to increase pitch");
-    execute!(stdout(), crossterm::cursor::MoveTo(0, 4))?;
-    println!("Press 'v' to decrease volume, 'b' to increase volume");
-    execute!(stdout(), crossterm::cursor::MoveTo(0, 5))?;
-    println!("Press 'f' to decrease low-pass filter, 'g' to increase");
-    execute!(stdout(), crossterm::cursor::MoveTo(0, 6))?;
-    println!("Press 'e' to toggle reverb effect");
-    execute!(stdout(), crossterm::cursor::MoveTo(0, 7))?;
-    println!("Press 'c' to clear console output");
-    execute!(stdout(), crossterm::cursor::MoveTo(0, 8))?;
-    println!("Press 'q' to quit");
-    Ok(())
-}
-
-// Process key presses
-fn handle_key_event(key_event: event::KeyEvent, player: &mut AudioPlayer) -> io::Result<bool> {
-    match key_event.code {
-        KeyCode::Char('p') => {
-            player.play_sound("example.wav", false)?;
-        },
-        KeyCode::Char('r') => {
-            player.play_sound("example.wav", true)?;
-        },
-        KeyCode::Char('j') => {
-            player.change_pitch(false)?;
-        },
-        KeyCode::Char('k') => {
-            player.change_pitch(true)?;
-        },
-        KeyCode::Char('v') => {
-            player.change_volume(false)?;
-        },
-        KeyCode::Char('b') => {
-            player.change_volume(true)?;
-        },
-        KeyCode::Char('f') => {
-            player.change_lowpass(false)?;
-        },
-        KeyCode::Char('g') => {
-            player.change_lowpass(true)?;
-        },
-        KeyCode::Char('e') => {
-            player.toggle_reverb()?;
-        },
-        KeyCode::Char('c') => {
-            // Clear the screen and redisplay UI
-            display_ui()?;
-            player.current_line = 10;
-        },
-        KeyCode::Char('q') => {
-            execute!(stdout(), crossterm::cursor::MoveTo(0, player.current_line))?;
-            println!("Quitting...");
-            return Ok(true); // Signal to quit
-        },
-        _ => {}
+    
+    // Update waveform visualization
+    fn update_waveform(&mut self) {
+        // Reset waveform if no active sounds and last played was over 5 seconds ago
+        if self.active_sinks.is_empty() && 
+           self.last_played.map_or(true, |t| t.elapsed() > Duration::from_secs(5)) {
+            for val in &mut self.waveform_values {
+                *val = *val * 0.9; // Fade out
+                if *val < 0.01 {
+                    *val = 0.0;
+                }
+            }
+            return;
+        }
+        
+        // Generate new waveform data based on current player state
+        let time = Instant::now().elapsed().as_secs_f64();
+        let is_active = !self.active_sinks.is_empty();
+        
+        for (i, val) in self.waveform_values.iter_mut().enumerate() {
+            if is_active {
+                let x = i as f64 / 10.0;
+                let base_wave = (time * 5.0 * self.playback_speed as f64 + x).sin() * self.volume as f64;
+                
+                // Apply "visual" filter similar to lowpass
+                let filter_factor = if self.lowpass_cutoff < 20000 {
+                    self.lowpass_cutoff as f64 / 20000.0
+                } else {
+                    1.0
+                };
+                
+                // Add harmonic for visuals
+                let harmonic = (time * 10.0 * self.playback_speed as f64 + x).sin() * 0.3 * filter_factor;
+                
+                // Combine waves
+                *val = (base_wave + harmonic).abs() as f32 * self.volume;
+                
+                // Add visual reverb effect
+                if self.reverb_enabled {
+                    let reverb_wave = (time * 5.0 * self.playback_speed as f64 + x - 0.5).sin() * 0.3 * self.volume as f64;
+                    *val += reverb_wave.abs() as f32;
+                }
+                
+                // Normalize
+                *val = (*val * 0.7).min(1.0);
+            } else {
+                // Fade out
+                *val = *val * 0.95;
+                if *val < 0.01 {
+                    *val = 0.0;
+                }
+            }
+        }
     }
-    Ok(false) // Continue running
+    
+    // Is any sound currently playing?
+    fn is_playing(&self) -> bool {
+        !self.active_sinks.is_empty()
+    }
+}
+
+// App state
+struct App {
+    player: AudioPlayer,
+    should_quit: bool,
+    last_update: Instant,
+}
+
+impl App {
+    fn new(stream_handle: OutputStreamHandle) -> Self {
+        Self {
+            player: AudioPlayer::new(stream_handle),
+            should_quit: false,
+            last_update: Instant::now(),
+        }
+    }
+
+    fn handle_key_events(&mut self, key_code: KeyCode) -> io::Result<()> {
+        match key_code {
+            KeyCode::Char('p') => {
+                self.player.play_sound("example.wav", false)?;
+            },
+            KeyCode::Char('r') => {
+                self.player.play_sound("example.wav", true)?;
+            },
+            KeyCode::Char('j') => {
+                self.player.change_pitch(false);
+            },
+            KeyCode::Char('k') => {
+                self.player.change_pitch(true);
+            },
+            KeyCode::Char('v') => {
+                self.player.change_volume(false);
+            },
+            KeyCode::Char('b') => {
+                self.player.change_volume(true);
+            },
+            KeyCode::Char('f') => {
+                self.player.change_lowpass(false);
+            },
+            KeyCode::Char('g') => {
+                self.player.change_lowpass(true);
+            },
+            KeyCode::Char('e') => {
+                self.player.toggle_reverb();
+            },
+            KeyCode::Char('q') => {
+                self.should_quit = true;
+            },
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn update(&mut self) {
+        // Update app state
+        self.player.update_looping_sounds();
+        self.player.cleanup_finished();
+        
+        // Update waveform every 50ms
+        if self.last_update.elapsed() > Duration::from_millis(50) {
+            self.player.update_waveform();
+            self.last_update = Instant::now();
+        }
+    }
+}
+
+fn ui(f: &mut Frame, app: &App) {
+    // Create the layout
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(
+            [
+                Constraint::Length(3),  // Title
+                Constraint::Length(3),  // Volume
+                Constraint::Length(3),  // Speed
+                Constraint::Length(3),  // Effects area
+                Constraint::Length(3),  // Controls
+                Constraint::Min(0),     // Waveform visualization (now larger at the bottom)
+            ]
+            .as_ref(),
+        )
+        .split(f.size());
+
+    // Title with playback status
+    let status = if app.player.is_playing() { 
+        " [PLAYING]" 
+    } else { 
+        "" 
+    };
+    
+    let title = Paragraph::new(format!("Audio Player{}", status))
+        .block(Block::default().borders(Borders::ALL).title("TUI Audio Player"))
+        .style(Style::default().fg(Color::Cyan))
+        .alignment(Alignment::Center);
+    f.render_widget(title, chunks[0]);
+
+    // Volume gauge
+    let volume_percent = (app.player.volume / 2.0 * 100.0) as u16;
+    let volume_gauge = Gauge::default()
+        .block(Block::default().borders(Borders::ALL).title("Volume"))
+        .gauge_style(Style::default().fg(Color::Yellow))
+        .percent(volume_percent)
+        .label(format!("{:.1}x", app.player.volume));
+    f.render_widget(volume_gauge, chunks[1]);
+
+    // Speed gauge
+    let speed_percent = (app.player.playback_speed / 3.0 * 100.0) as u16;
+    let speed_gauge = Gauge::default()
+        .block(Block::default().borders(Borders::ALL).title("Playback Speed"))
+        .gauge_style(Style::default().fg(Color::Green))
+        .percent(speed_percent)
+        .label(format!("{:.1}x", app.player.playback_speed));
+    f.render_widget(speed_gauge, chunks[2]);
+
+    // Effects area - split horizontally
+    let effects_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+        .split(chunks[3]);
+
+    // Low-pass filter
+    let filter_text = if app.player.lowpass_cutoff >= 20000 {
+        "OFF".to_string()
+    } else {
+        format!("{}Hz", app.player.lowpass_cutoff)
+    };
+    
+    let filter_percent = if app.player.lowpass_cutoff >= 20000 {
+        100
+    } else {
+        (app.player.lowpass_cutoff as f32 / 20000.0 * 100.0) as u16
+    };
+    
+    let lowpass_gauge = Gauge::default()
+        .block(Block::default().borders(Borders::ALL).title("Low-Pass Filter"))
+        .gauge_style(Style::default().fg(Color::Blue))
+        .percent(filter_percent)
+        .label(filter_text);
+    f.render_widget(lowpass_gauge, effects_chunks[0]);
+    
+    // Simplified reverb indicator
+    let reverb_title = if app.player.reverb_enabled {
+        "Reverb: ON"
+    } else {
+        "Reverb: OFF"
+    };
+    
+    let reverb_gauge = Gauge::default()
+        .block(Block::default().borders(Borders::ALL).title(reverb_title))
+        .gauge_style(if app.player.reverb_enabled {
+            Style::default().fg(Color::Magenta)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        })
+        .percent(if app.player.reverb_enabled { 100 } else { 0 })
+        .label(if app.player.reverb_enabled { "Enabled" } else { "Disabled" });
+    
+    f.render_widget(reverb_gauge, effects_chunks[1]);
+
+    // Controls with status
+    let playing_info = if app.player.active_sinks.is_empty() {
+        String::new()
+    } else {
+        let loop_count = app.player.active_sinks.iter().filter(|(_, is_loop)| *is_loop).count();
+        format!(" | Playing: {} (Loops: {})", app.player.active_sinks.len(), loop_count)
+    };
+    
+    let controls_text = 
+        format!("p: Play  r: Loop  j/k: Pitch⬇/⬆  v/b: Vol⬇/⬆  f/g: Filter⬇/⬆  e: Reverb  q: Quit{}", 
+                playing_info);
+    
+    let controls = Paragraph::new(controls_text)
+        .style(Style::default().fg(Color::White))
+        .block(Block::default().borders(Borders::ALL).title("Controls"))
+        .alignment(Alignment::Center);
+    f.render_widget(controls, chunks[4]);
+
+    // Waveform visualization (now with more space at the bottom)
+    let wave_block = Block::default()
+        .borders(Borders::ALL)
+        .title("Sound Visualization");
+    
+    // Create a sparkline for audio waveform
+    let waveform_data: Vec<u64> = app.player.waveform_values
+        .iter()
+        .map(|&v| (v * 100.0) as u64)
+        .collect();
+    
+    let sparkline = ratatui::widgets::Sparkline::default()
+        .block(wave_block)
+        .data(&waveform_data)
+        .style(if app.player.is_playing() {
+            Style::default().fg(Color::Green)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        });
+    
+    f.render_widget(sparkline, chunks[5]);
 }
 
 fn main() -> io::Result<()> {
-    // Enable raw mode to get key presses without waiting for Enter
+    // Setup terminal
     enable_raw_mode()?;
-    
-    // Display the UI
-    display_ui()?;
-    
+    let mut stdout = stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
     // Set up audio - with error handling
     let (_stream, stream_handle) = match OutputStream::try_default() {
         Ok(output) => output,
         Err(e) => {
-            execute!(stdout(), crossterm::cursor::MoveTo(0, 10))?;
-            println!("Failed to initialize audio: {}. Exiting.", e);
             disable_raw_mode()?;
+            execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+            terminal.show_cursor()?;
+            eprintln!("Failed to initialize audio: {}. Exiting.", e);
             return Ok(());
         }
     };
     
-    // Create the audio player
-    let mut player = AudioPlayer::new(stream_handle);
-    
-    // Main application loop
+    // Create the app state
+    let mut app = App::new(stream_handle);
+
     loop {
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key_event) = event::read()? {
-                // Handle key events, quit if requested
-                if handle_key_event(key_event, &mut player)? {
-                    break;
-                }
+        // Draw the UI
+        terminal.draw(|f| ui(f, &app))?;
+
+        // Handle key events
+        if event::poll(Duration::from_millis(16))? { // ~60fps
+            if let Event::Key(key) = event::read()? {
+                app.handle_key_events(key.code)?;
             }
         }
-        
-        // Update looping sounds
-        player.update_looping_sounds();
-        
-        // Clean up finished sounds
-        player.cleanup_finished();
+
+        // Update app state
+        app.update();
+
+        // Check if we should quit
+        if app.should_quit {
+            break;
+        }
     }
-    
-    // Restore terminal settings
+
+    // Restore terminal
     disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+
     Ok(())
 }
