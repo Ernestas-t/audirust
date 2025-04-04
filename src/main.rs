@@ -1,6 +1,8 @@
 mod app;
 mod audio_player;
+mod file_manager;
 mod ui;
+mod utils;
 
 use app::App;
 use crossterm::{

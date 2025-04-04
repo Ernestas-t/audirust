@@ -7,6 +7,7 @@ AudioRust is a terminal-based audio player built in Rust with a Text User Interf
 ## Features
 
 - **Play and loop audio** files with intuitive controls
+- **File browser** for selecting audio files (.wav, .mp3, .ogg, .flac)
 - **Real-time audio visualization** with waveform display
 - **Multiple audio effects**:
   - Volume control
@@ -47,13 +48,13 @@ The compiled binary will be at `target/release/audirust`.
 
 ## Usage
 
-Place an audio file named `example.wav` in the same directory as the executable, or edit the source to point to your audio files.
+AudioRust will search for audio files in your current directory. You can use the file browser to navigate and select audio files to play.
 
 ### Keyboard Controls
 
 #### Normal Mode
-- `p` - Play sound once
-- `r` - Play sound in loop
+- `p` - Play selected sound once
+- `r` - Play selected sound in loop
 - `e` - Toggle reverb effect
 - `Space` - Open command menu
 - `q` - Quit application
@@ -62,6 +63,7 @@ Place an audio file named `example.wav` in the same directory as the executable,
 - `v` - Enter Volume Mode
 - `c` - Enter Pitch Mode
 - `g` - Enter Filter Mode
+- `f` - Open File Browser
 - `Esc` - Close menu
 
 #### Volume Mode
@@ -79,6 +81,15 @@ Place an audio file named `example.wav` in the same directory as the executable,
 - `k` / Up Arrow - Raise the filter cutoff frequency
 - `Esc` - Return to normal mode
 
+#### File Browser Mode (Press `Space` then `f` to activate)
+- `j` / Down Arrow - Navigate down through files and directories
+- `k` / Up Arrow - Navigate up through files and directories
+- `h` / Left Arrow - Go to parent directory
+- `l` / Right Arrow / Enter - Enter directory or play file and return to normal mode
+- `p` - Play selected audio file (stay in browser)
+- `r` - Loop selected audio file (stay in browser)
+- `Esc` - Return to normal mode
+
 ## Technical Details
 
 AudioRust is built with:
@@ -91,8 +102,9 @@ AudioRust is built with:
 The architecture follows a modular design:
 - **Main app**: Controls application flow and event handling
 - **Audio player**: Manages audio playback and effects
-- **UI module**: Renders the terminal interface
-- **Effect management**: Handles all audio effects
+- **Effect management**: Handles all audio effects in a separate module
+- **File manager**: Provides file system navigation and audio file detection
+- **UI module**: Renders the terminal interface with file browser and audio visualization
 
 ## Compatible Platforms
 
@@ -103,11 +115,12 @@ The architecture follows a modular design:
 
 ## Features in Development
 
-- [ ] File browser for selecting audio files
+- [x] ~~File browser for selecting audio files~~ (Implemented!)
 - [ ] Playlist support
 - [ ] More audio effects (e.g., equalizer)
 - [ ] Configuration through config files
 - [ ] Custom keybindings
+- [ ] Media control key support
 
 ## License
 

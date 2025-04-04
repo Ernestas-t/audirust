@@ -3,22 +3,30 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, Gauge, Paragraph, Sparkline},
 };
 
 pub fn draw(f: &mut Frame, app: &App) {
+    // If in file browser mode, show that instead of normal UI
+    if app.mode == AppMode::FileBrowser {
+        render_file_browser(f, app);
+        return;
+    }
+
+    // Normal UI rendering for other modes
     // Create the layout
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(
             [
                 Constraint::Length(3), // Title
+                Constraint::Length(3), // Current file
                 Constraint::Length(3), // Volume
                 Constraint::Length(3), // Speed
                 Constraint::Length(3), // Effects area
                 Constraint::Length(3), // Controls
-                Constraint::Min(0),    // Waveform visualization (now larger at the bottom)
+                Constraint::Min(0),    // Waveform visualization
             ]
             .as_ref(),
         )
@@ -30,6 +38,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         AppMode::Volume => " [VOLUME MODE]",
         AppMode::Pitch => " [PITCH MODE]",
         AppMode::Filter => " [FILTER MODE]",
+        AppMode::FileBrowser => " [FILE BROWSER]",
     };
 
     let status = if app.player.is_playing() {
@@ -52,6 +61,22 @@ pub fn draw(f: &mut Frame, app: &App) {
         .alignment(ratatui::prelude::Alignment::Center);
     f.render_widget(title, chunks[0]);
 
+    let file_text = match &app.current_audio_file {
+        Some(file_name) => format!("🎵 {}", file_name),
+        None => "No file selected".to_string(),
+    };
+
+    let current_file = Paragraph::new(file_text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Current Audio File"),
+        )
+        .style(Style::default().fg(Color::Cyan))
+        .alignment(ratatui::prelude::Alignment::Center);
+
+    f.render_widget(current_file, chunks[1]);
+
     // Volume gauge
     let volume_percent = (app.player.effect_manager.get_volume() / 2.0 * 100.0) as u16;
     let volume_gauge = Gauge::default()
@@ -71,7 +96,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         }))
         .percent(volume_percent)
         .label(format!("{:.1}x", app.player.effect_manager.get_volume()));
-    f.render_widget(volume_gauge, chunks[1]);
+    f.render_widget(volume_gauge, chunks[2]);
 
     // Speed gauge
     let speed_percent = (app.player.effect_manager.get_playback_speed() / 3.0 * 100.0) as u16;
@@ -95,13 +120,13 @@ pub fn draw(f: &mut Frame, app: &App) {
             "{:.1}x",
             app.player.effect_manager.get_playback_speed()
         ));
-    f.render_widget(speed_gauge, chunks[2]);
+    f.render_widget(speed_gauge, chunks[3]);
 
     // Effects area - split horizontally
     let effects_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
-        .split(chunks[3]);
+        .split(chunks[4]);
 
     // Low-pass filter
     let lowpass_cutoff = app.player.effect_manager.get_lowpass_cutoff();
@@ -186,13 +211,16 @@ pub fn draw(f: &mut Frame, app: &App) {
         AppMode::Volume => "j/k: Adjust Volume  Esc: Exit mode".to_string(),
         AppMode::Pitch => "j/k: Adjust Pitch  Esc: Exit mode".to_string(),
         AppMode::Filter => "j/k: Adjust Filter  Esc: Exit mode".to_string(),
+        AppMode::FileBrowser => {
+            "j/k: Navigate  Enter: Select/Play  h: Up Dir  Esc: Exit".to_string()
+        }
     };
 
     let controls = Paragraph::new(controls_text)
         .style(Style::default().fg(Color::White))
         .block(Block::default().borders(Borders::ALL).title("Controls"))
         .alignment(ratatui::prelude::Alignment::Center);
-    f.render_widget(controls, chunks[4]);
+    f.render_widget(controls, chunks[5]);
 
     // Waveform visualization (now with more space at the bottom)
     let wave_block = Block::default()
@@ -217,13 +245,13 @@ pub fn draw(f: &mut Frame, app: &App) {
             Style::default().fg(Color::DarkGray)
         });
 
-    f.render_widget(sparkline, chunks[5]);
+    f.render_widget(sparkline, chunks[6]);
 
     fn render_help_popup(f: &mut Frame) {
         // Calculate popup size and position
         let area = f.area();
         let popup_width = 40;
-        let popup_height = 10;
+        let popup_height = 12; // Increased height for file browser option
         let popup_x = (area.width - popup_width) / 2;
         let popup_y = (area.height - popup_height) / 2;
 
@@ -273,6 +301,15 @@ pub fn draw(f: &mut Frame, app: &App) {
                 Span::raw(": Filter mode"),
             ]),
             Line::from(vec![
+                Span::styled(
+                    "f",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(": File browser"),
+            ]),
+            Line::from(vec![
                 Span::styled("Esc", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(": Close menu"),
             ]),
@@ -280,6 +317,98 @@ pub fn draw(f: &mut Frame, app: &App) {
 
         let help_paragraph = Paragraph::new(help_text);
         f.render_widget(help_paragraph, inner_area);
+    }
+
+    fn render_file_browser(f: &mut Frame, app: &App) {
+        // Use the bottom section for file browser
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3), // Header
+                Constraint::Min(0),    // File list
+                Constraint::Length(3), // Instructions
+            ])
+            .margin(1)
+            .split(f.area());
+
+        // Create a block for file browser
+        let block = Block::default()
+            .title(format!(
+                " File Browser: {} ",
+                app.file_manager.current_dir.to_string_lossy()
+            ))
+            .borders(Borders::ALL);
+        f.render_widget(block, f.area());
+
+        // Header
+        let header =
+            Paragraph::new("Use j/k to navigate, Enter to select/play, h to go up, Esc to exit")
+                .style(Style::default().add_modifier(Modifier::BOLD))
+                .alignment(ratatui::prelude::Alignment::Center);
+        f.render_widget(header, chunks[0]);
+
+        // Create list of files
+        let mut items = Vec::new();
+        for (i, path) in app.file_manager.entries.iter().enumerate() {
+            let file_name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "???".to_string());
+
+            let is_dir = path.is_dir();
+            let prefix = if is_dir { "📁 " } else { "🎵 " };
+
+            let display_name = format!("{}{}", prefix, file_name);
+
+            if i == app.file_manager.selected_index {
+                // Highlight selected item
+                items.push(Line::from(vec![Span::styled(
+                    format!("> {}", display_name),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )]));
+            } else {
+                items.push(Line::from(display_name));
+            }
+        }
+
+        if items.is_empty() {
+            items.push(Line::from(vec![Span::styled(
+                "No files or directories found",
+                Style::default().fg(Color::Red),
+            )]));
+        }
+
+        let file_list = Paragraph::new(items).block(Block::default());
+        f.render_widget(file_list, chunks[1]);
+
+        // Instructions
+        let instructions = Paragraph::new(Text::from(vec![Line::from(vec![
+            Span::styled(
+                "p",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(": Play file  "),
+            Span::styled(
+                "r",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(": Loop file  "),
+            Span::styled(
+                "Esc",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(": Exit browser"),
+        ])]))
+        .alignment(ratatui::prelude::Alignment::Center);
+        f.render_widget(instructions, chunks[2]);
     }
 
     // Render help popup if needed
