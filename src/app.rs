@@ -1,10 +1,8 @@
 use crate::audio_player::AudioPlayer;
+use crate::audio_player::effects::EffectType;
 use crossterm::event::KeyCode;
 use rodio::OutputStreamHandle;
-use std::{
-    io,
-    time::{Duration, Instant},
-};
+use std::{io, time::Instant};
 
 // App state
 pub struct App {
@@ -31,25 +29,25 @@ impl App {
                 self.player.play_sound("example.wav", true)?;
             }
             KeyCode::Char('j') => {
-                self.player.change_pitch(false);
+                self.player.effect_manager.change_pitch(false);
             }
             KeyCode::Char('k') => {
-                self.player.change_pitch(true);
+                self.player.effect_manager.change_pitch(true);
             }
             KeyCode::Char('v') => {
-                self.player.change_volume(false);
+                self.player.effect_manager.change_volume(false);
             }
             KeyCode::Char('b') => {
-                self.player.change_volume(true);
+                self.player.effect_manager.change_volume(true);
             }
             KeyCode::Char('f') => {
-                self.player.change_lowpass(false);
+                self.player.effect_manager.change_lowpass(false);
             }
             KeyCode::Char('g') => {
-                self.player.change_lowpass(true);
+                self.player.effect_manager.change_lowpass(true);
             }
             KeyCode::Char('e') => {
-                self.player.toggle_reverb();
+                self.player.effect_manager.toggle_reverb();
             }
             KeyCode::Char('q') => {
                 self.should_quit = true;
@@ -60,14 +58,8 @@ impl App {
     }
 
     pub fn update(&mut self) {
-        // Update app state
-        self.player.update_looping_sounds();
         self.player.cleanup_finished();
-
-        // Update waveform every 50ms
-        if self.last_update.elapsed() > Duration::from_millis(50) {
-            self.player.update_waveform();
-            self.last_update = Instant::now();
-        }
+        self.player.update_looping_sounds();
+        self.player.update();
     }
 }

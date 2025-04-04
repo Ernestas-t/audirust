@@ -3,7 +3,6 @@ mod audio_player;
 mod ui;
 
 use app::App;
-use audio_player::AudioPlayer;
 use crossterm::{
     event::{self, Event},
     execute,

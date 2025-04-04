@@ -45,16 +45,16 @@ pub fn draw(f: &mut Frame, app: &App) {
     f.render_widget(title, chunks[0]);
 
     // Volume gauge
-    let volume_percent = (app.player.volume / 2.0 * 100.0) as u16;
+    let volume_percent = (app.player.effect_manager.get_volume() / 2.0 * 100.0) as u16;
     let volume_gauge = Gauge::default()
         .block(Block::default().borders(Borders::ALL).title("Volume"))
         .gauge_style(Style::default().fg(Color::Yellow))
         .percent(volume_percent)
-        .label(format!("{:.1}x", app.player.volume));
+        .label(format!("{:.1}x", app.player.effect_manager.get_volume()));
     f.render_widget(volume_gauge, chunks[1]);
 
     // Speed gauge
-    let speed_percent = (app.player.playback_speed / 3.0 * 100.0) as u16;
+    let speed_percent = (app.player.effect_manager.get_playback_speed() / 3.0 * 100.0) as u16;
     let speed_gauge = Gauge::default()
         .block(
             Block::default()
@@ -63,7 +63,10 @@ pub fn draw(f: &mut Frame, app: &App) {
         )
         .gauge_style(Style::default().fg(Color::Green))
         .percent(speed_percent)
-        .label(format!("{:.1}x", app.player.playback_speed));
+        .label(format!(
+            "{:.1}x",
+            app.player.effect_manager.get_playback_speed()
+        ));
     f.render_widget(speed_gauge, chunks[2]);
 
     // Effects area - split horizontally
@@ -73,16 +76,17 @@ pub fn draw(f: &mut Frame, app: &App) {
         .split(chunks[3]);
 
     // Low-pass filter
-    let filter_text = if app.player.lowpass_cutoff >= 20000 {
+    let lowpass_cutoff = app.player.effect_manager.get_lowpass_cutoff();
+    let filter_text = if lowpass_cutoff >= 20000 {
         "OFF".to_string()
     } else {
-        format!("{}Hz", app.player.lowpass_cutoff)
+        format!("{}Hz", lowpass_cutoff)
     };
 
-    let filter_percent = if app.player.lowpass_cutoff >= 20000 {
+    let filter_percent = if lowpass_cutoff >= 20000 {
         100
     } else {
-        (app.player.lowpass_cutoff as f32 / 20000.0 * 100.0) as u16
+        (lowpass_cutoff as f32 / 20000.0 * 100.0) as u16
     };
 
     let lowpass_gauge = Gauge::default()
@@ -97,7 +101,8 @@ pub fn draw(f: &mut Frame, app: &App) {
     f.render_widget(lowpass_gauge, effects_chunks[0]);
 
     // Simplified reverb indicator
-    let reverb_title = if app.player.reverb_enabled {
+    let reverb_enabled = app.player.effect_manager.is_reverb_enabled();
+    let reverb_title = if reverb_enabled {
         "Reverb: ON"
     } else {
         "Reverb: OFF"
@@ -105,13 +110,13 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     let reverb_gauge = Gauge::default()
         .block(Block::default().borders(Borders::ALL).title(reverb_title))
-        .gauge_style(if app.player.reverb_enabled {
+        .gauge_style(if reverb_enabled {
             Style::default().fg(Color::Magenta)
         } else {
             Style::default().fg(Color::DarkGray)
         })
-        .percent(if app.player.reverb_enabled { 100 } else { 0 })
-        .label(if app.player.reverb_enabled {
+        .percent(if reverb_enabled { 100 } else { 0 })
+        .label(if reverb_enabled {
             "Enabled"
         } else {
             "Disabled"
@@ -155,6 +160,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     // Create a sparkline for audio waveform
     let waveform_data: Vec<u64> = app
         .player
+        .visualizer
         .waveform_values
         .iter()
         .map(|&v| (v * 100.0) as u64)
