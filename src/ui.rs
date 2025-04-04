@@ -3,7 +3,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span, Text},
+    text::{Line, Span},
     widgets::{Block, Borders, Clear, Gauge, Paragraph, Sparkline},
 };
 
@@ -221,7 +221,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     fn render_help_popup(f: &mut Frame) {
         // Calculate popup size and position
-        let area = f.size();
+        let area = f.area();
         let popup_width = 40;
         let popup_height = 10;
         let popup_x = (area.width - popup_width) / 2;
