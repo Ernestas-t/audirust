@@ -1,14 +1,12 @@
 use crate::audio_player::AudioPlayer;
-use crate::audio_player::effects::EffectType;
 use crossterm::event::KeyCode;
 use rodio::OutputStreamHandle;
-use std::{io, time::Instant};
+use std::io;
 
 // App state
 pub struct App {
     pub player: AudioPlayer,
     pub should_quit: bool,
-    pub last_update: Instant,
 }
 
 impl App {
@@ -16,7 +14,6 @@ impl App {
         Self {
             player: AudioPlayer::new(stream_handle),
             should_quit: false,
-            last_update: Instant::now(),
         }
     }
 

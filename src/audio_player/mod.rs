@@ -1,10 +1,9 @@
 pub mod effects;
 pub mod visualization;
 
-use effects::{EffectManager, EffectType};
+use effects::EffectManager;
 use rodio::{Decoder, OutputStreamHandle, Sink, Source, dynamic_mixer::mixer};
 use std::{
-    collections::VecDeque,
     fs::File,
     io::{self, BufReader},
     sync::Arc,
@@ -64,7 +63,7 @@ impl AudioPlayer {
                     let file_buf = BufReader::new(file);
                     if let Ok(source) = Decoder::new(file_buf) {
                         // Apply base effects
-                        let mut main_source = source
+                        let main_source = source
                             .speed(self.effect_manager.get_playback_speed())
                             .amplify(self.effect_manager.get_volume());
 

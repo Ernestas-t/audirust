@@ -1,10 +1,3 @@
-pub enum EffectType {
-    Volume,
-    Pitch,
-    LowPass,
-    Reverb,
-}
-
 // Main effect manager to handle all audio effects
 pub struct EffectManager {
     pub playback_speed: f32,
