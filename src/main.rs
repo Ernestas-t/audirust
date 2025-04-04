@@ -20,7 +20,7 @@ use std::{
 
 // Represents the current state of the audio player
 struct AudioPlayer {
-    stream_handle: OutputStreamHandle,
+    stream_handle: Option<OutputStreamHandle>,
     active_sinks: Vec<(Arc<Sink>, bool)>,
     playback_speed: f32,
     volume: f32,
@@ -31,18 +31,22 @@ struct AudioPlayer {
     last_played: Option<Instant>,
     waveform_values: Vec<f32>,    // Values for sound wave visualization
     audio_samples: VecDeque<f32>, // Use a fixed-size buffer for recent samples
+    visual_only_mode: bool,
 }
 
 impl AudioPlayer {
     // Initialize a new audio player
-    fn new(stream_handle: OutputStreamHandle) -> Self {
+    fn new(stream_handle: Option<OutputStreamHandle>) -> Self {
         // Initialize with some random waveform data
         let waveform = (0..100)
-            .map(|i| {
+            .map(|_| {
                 // Start with no wave
                 0.0
             })
             .collect();
+
+        // Check if we're in visual-only mode before moving stream_handle
+        let visual_only_mode = stream_handle.is_none();
 
         AudioPlayer {
             stream_handle,
@@ -56,6 +60,7 @@ impl AudioPlayer {
             last_played: None,
             waveform_values: waveform,
             audio_samples: VecDeque::new(), // Initialize empty
+            visual_only_mode,
         }
     }
 
@@ -70,65 +75,75 @@ impl AudioPlayer {
 
     // Play a sound file (looping or non-looping)
     fn play_sound(&mut self, file_path: &str, is_looping: bool) -> io::Result<()> {
+        // Check if we're in visual-only mode
+        if self.visual_only_mode {
+            // Simulate playing sound in visual-only mode
+            self.last_played = Some(Instant::now());
+            return Ok(());
+        }
+
         // Create a new sink for the sound
-        if let Ok(sink) = Sink::try_new(&self.stream_handle) {
-            let sink = Arc::new(sink);
+        if let Some(stream_handle) = &self.stream_handle {
+            if let Ok(sink) = Sink::try_new(stream_handle) {
+                let sink = Arc::new(sink);
 
-            // Create a mixer for combining multiple audio sources
-            // 2 channels (stereo), 44100 Hz sample rate
-            let (mixer_controller, mixer) = mixer(2, 44100);
+                // Create a mixer for combining multiple audio sources
+                // 2 channels (stereo), 44100 Hz sample rate
+                let (mixer_controller, mixer) = mixer(2, 44100);
 
-            // Process main audio and add to mixer
-            if let Ok(file) = File::open(file_path) {
-                let file_buf = BufReader::new(file);
-                if let Ok(source) = Decoder::new(file_buf) {
-                    // Apply base effects to main sound
-                    let main_source = source.speed(self.playback_speed).amplify(self.volume);
+                // Process main audio and add to mixer
+                if let Ok(file) = File::open(file_path) {
+                    let file_buf = BufReader::new(file);
+                    if let Ok(source) = Decoder::new(file_buf) {
+                        // Apply base effects to main sound
+                        let main_source = source.speed(self.playback_speed).amplify(self.volume);
 
-                    // Add to mixer
-                    mixer_controller.add(main_source);
+                        // Add to mixer
+                        mixer_controller.add(main_source);
 
-                    // Add reverb effect if enabled
-                    if self.reverb_enabled {
-                        // Open a second instance of the file for reverb
-                        if let Ok(reverb_file) = File::open(file_path) {
-                            let reverb_buf = BufReader::new(reverb_file);
-                            if let Ok(reverb_source) = Decoder::new(reverb_buf) {
-                                // Create reverb effect - delayed and quieter
-                                let reverb = reverb_source
-                                    .speed(self.playback_speed)
-                                    .amplify(self.volume * 0.4)
-                                    .delay(Duration::from_secs_f32(self.reverb_delay));
+                        // Add reverb effect if enabled
+                        if self.reverb_enabled {
+                            // Open a second instance of the file for reverb
+                            if let Ok(reverb_file) = File::open(file_path) {
+                                let reverb_buf = BufReader::new(reverb_file);
+                                if let Ok(reverb_source) = Decoder::new(reverb_buf) {
+                                    // Create reverb effect - delayed and quieter
+                                    let reverb = reverb_source
+                                        .speed(self.playback_speed)
+                                        .amplify(self.volume * 0.4)
+                                        .delay(Duration::from_secs_f32(self.reverb_delay));
 
-                                // Add reverb to mixer
-                                mixer_controller.add(reverb);
+                                    // Add reverb to mixer
+                                    mixer_controller.add(reverb);
+                                }
                             }
                         }
-                    }
 
-                    // Apply low-pass filter to the entire mix if needed
-                    if self.lowpass_cutoff < 20000 {
-                        // Convert mixer's output to f32 samples
-                        let filtered_mix = mixer.convert_samples().low_pass(self.lowpass_cutoff);
-                        sink.append(filtered_mix);
+                        // Apply low-pass filter to the entire mix if needed
+                        if self.lowpass_cutoff < 20000 {
+                            // Convert mixer's output to f32 samples
+                            let filtered_mix =
+                                mixer.convert_samples().low_pass(self.lowpass_cutoff);
+                            sink.append(filtered_mix);
+                        } else {
+                            // No filter needed
+                            sink.append(mixer);
+                        }
+
+                        // Store the sink and mixer controller to keep them alive
+                        self.active_sinks.push((Arc::clone(&sink), is_looping));
+
+                        // Mark the time we last played a sound
+                        self.last_played = Some(Instant::now());
                     } else {
-                        // No filter needed
-                        sink.append(mixer);
+                        self.add_message("Error decoding audio file");
                     }
-
-                    // Store the sink and mixer controller to keep them alive
-                    self.active_sinks.push((Arc::clone(&sink), is_looping));
-
-                    // Mark the time we last played a sound
-                    self.last_played = Some(Instant::now());
                 } else {
-                    self.add_message("Error decoding audio file");
+                    self.add_message(&format!(
+                        "Error opening file: Make sure {} exists!",
+                        file_path
+                    ));
                 }
-            } else {
-                self.add_message(&format!(
-                    "Error opening file: Make sure {} exists!",
-                    file_path
-                ));
             }
         }
 
@@ -169,6 +184,11 @@ impl AudioPlayer {
 
     // Update the looping sounds if needed
     fn update_looping_sounds(&self) {
+        // In visual-only mode, we don't need to update looping sounds
+        if self.visual_only_mode {
+            return;
+        }
+
         // Manually handle looping by checking if a looping sink is empty
         for (sink, is_looping) in &self.active_sinks {
             if *is_looping && sink.empty() {
@@ -284,10 +304,11 @@ impl AudioPlayer {
             }
         } else {
             // Fall back to simulated waveform if no audio samples available
+            // or if we're in visual-only mode
             let time = Instant::now().elapsed().as_secs_f64();
 
             for (i, val) in self.waveform_values.iter_mut().enumerate() {
-                if is_active {
+                if is_active || self.visual_only_mode {
                     let x = i as f64 / 10.0;
                     let base_wave =
                         (time * 5.0 * self.playback_speed as f64 + x).sin() * self.volume as f64;
@@ -329,7 +350,7 @@ impl AudioPlayer {
 
     // Is any sound currently playing?
     fn is_playing(&self) -> bool {
-        !self.active_sinks.is_empty()
+        self.visual_only_mode || !self.active_sinks.is_empty()
     }
 }
 
@@ -341,7 +362,7 @@ struct App {
 }
 
 impl App {
-    fn new(stream_handle: OutputStreamHandle) -> Self {
+    fn new(stream_handle: Option<OutputStreamHandle>) -> Self {
         Self {
             player: AudioPlayer::new(stream_handle),
             should_quit: false,
@@ -418,7 +439,11 @@ fn ui(f: &mut Frame, app: &App) {
 
     // Title with playback status
     let status = if app.player.is_playing() {
-        " [PLAYING]"
+        if app.player.visual_only_mode {
+            " [VISUAL MODE]"
+        } else {
+            " [PLAYING]"
+        }
     } else {
         ""
     };
@@ -569,20 +594,30 @@ fn main() -> io::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Set up audio - with error handling
-    let (_stream, stream_handle) = match OutputStream::try_default() {
-        Ok(output) => output,
+    // Set up audio - but continue even if it fails
+    let stream_handle = match OutputStream::try_default() {
+        Ok((_stream, handle)) => {
+            // Keep stream alive by storing it in a tuple
+            Some(handle)
+        }
         Err(e) => {
-            disable_raw_mode()?;
-            execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-            terminal.show_cursor()?;
-            eprintln!("Failed to initialize audio: {}. Exiting.", e);
-            return Ok(());
+            // Log the error and continue in visual-only mode
+            eprintln!(
+                "Audio device not available: {}. Running in visual-only mode.",
+                e
+            );
+            None
         }
     };
 
     // Create the app state
     let mut app = App::new(stream_handle);
+
+    // Add a message if we're in visual-only mode
+    if app.player.visual_only_mode {
+        app.player
+            .add_message("Running in visual-only mode (no audio device)");
+    }
 
     loop {
         // Draw the UI
