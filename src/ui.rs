@@ -1,9 +1,10 @@
-use crate::app::App;
+use crate::app::{App, AppMode};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout},
-    style::{Color, Style},
-    widgets::{Block, Borders, Gauge, Paragraph, Sparkline},
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span, Text},
+    widgets::{Block, Borders, Clear, Gauge, Paragraph, Sparkline},
 };
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -23,7 +24,14 @@ pub fn draw(f: &mut Frame, app: &App) {
         )
         .split(f.area());
 
-    // Title with playback status
+    // Title with playback status and current mode
+    let mode_text = match app.mode {
+        AppMode::Normal => "",
+        AppMode::Volume => " [VOLUME MODE]",
+        AppMode::Pitch => " [PITCH MODE]",
+        AppMode::Filter => " [FILTER MODE]",
+    };
+
     let status = if app.player.is_playing() {
         if app.player.visual_only_mode {
             " [VISUAL MODE]"
@@ -34,7 +42,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         ""
     };
 
-    let title = Paragraph::new(format!("Audio Player{}", status))
+    let title = Paragraph::new(format!("Audio Player{}{}", status, mode_text))
         .block(
             Block::default()
                 .borders(Borders::ALL)
@@ -47,8 +55,20 @@ pub fn draw(f: &mut Frame, app: &App) {
     // Volume gauge
     let volume_percent = (app.player.effect_manager.get_volume() / 2.0 * 100.0) as u16;
     let volume_gauge = Gauge::default()
-        .block(Block::default().borders(Borders::ALL).title("Volume"))
-        .gauge_style(Style::default().fg(Color::Yellow))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(if app.mode == AppMode::Volume {
+                    "Volume (j/k to adjust)"
+                } else {
+                    "Volume"
+                }),
+        )
+        .gauge_style(Style::default().fg(if app.mode == AppMode::Volume {
+            Color::Red
+        } else {
+            Color::Yellow
+        }))
         .percent(volume_percent)
         .label(format!("{:.1}x", app.player.effect_manager.get_volume()));
     f.render_widget(volume_gauge, chunks[1]);
@@ -59,9 +79,17 @@ pub fn draw(f: &mut Frame, app: &App) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Playback Speed"),
+                .title(if app.mode == AppMode::Pitch {
+                    "Playback Speed (j/k to adjust)"
+                } else {
+                    "Playback Speed"
+                }),
         )
-        .gauge_style(Style::default().fg(Color::Green))
+        .gauge_style(Style::default().fg(if app.mode == AppMode::Pitch {
+            Color::Red
+        } else {
+            Color::Green
+        }))
         .percent(speed_percent)
         .label(format!(
             "{:.1}x",
@@ -93,9 +121,17 @@ pub fn draw(f: &mut Frame, app: &App) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Low-Pass Filter"),
+                .title(if app.mode == AppMode::Filter {
+                    "Low-Pass Filter (j/k to adjust)"
+                } else {
+                    "Low-Pass Filter"
+                }),
         )
-        .gauge_style(Style::default().fg(Color::Blue))
+        .gauge_style(Style::default().fg(if app.mode == AppMode::Filter {
+            Color::Red
+        } else {
+            Color::Blue
+        }))
         .percent(filter_percent)
         .label(filter_text);
     f.render_widget(lowpass_gauge, effects_chunks[0]);
@@ -141,10 +177,16 @@ pub fn draw(f: &mut Frame, app: &App) {
         )
     };
 
-    let controls_text = format!(
-        "p: Play  r: Loop  j/k: Pitch⬇/⬆  v/b: Vol⬇/⬆  f/g: Filter⬇/⬆  e: Reverb  q: Quit{}",
-        playing_info
-    );
+    // Update controls based on mode
+    let controls_text = match app.mode {
+        AppMode::Normal => format!(
+            "p: Play  r: Loop  <Space>: Menu  e: Reverb  q: Quit{}",
+            playing_info
+        ),
+        AppMode::Volume => "j/k: Adjust Volume  Esc: Exit mode".to_string(),
+        AppMode::Pitch => "j/k: Adjust Pitch  Esc: Exit mode".to_string(),
+        AppMode::Filter => "j/k: Adjust Filter  Esc: Exit mode".to_string(),
+    };
 
     let controls = Paragraph::new(controls_text)
         .style(Style::default().fg(Color::White))
@@ -176,4 +218,72 @@ pub fn draw(f: &mut Frame, app: &App) {
         });
 
     f.render_widget(sparkline, chunks[5]);
+
+    fn render_help_popup(f: &mut Frame) {
+        // Calculate popup size and position
+        let area = f.size();
+        let popup_width = 40;
+        let popup_height = 10;
+        let popup_x = (area.width - popup_width) / 2;
+        let popup_y = (area.height - popup_height) / 2;
+
+        let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+        // Render the popup background
+        f.render_widget(Clear, popup_area);
+
+        // Create the popup block
+        let help_block = Block::default()
+            .title("Command Menu")
+            .borders(Borders::ALL)
+            .style(Style::default().bg(Color::Black).fg(Color::White));
+
+        f.render_widget(help_block, popup_area);
+
+        // Create the inner area for text
+        let inner_area = Rect::new(popup_x + 2, popup_y + 2, popup_width - 4, popup_height - 4);
+
+        // Help text
+        let help_text = vec![
+            Line::from(vec![
+                Span::styled(
+                    "v",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(": Volume mode"),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "c",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(": Pitch mode"),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "g",
+                    Style::default()
+                        .fg(Color::Blue)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(": Filter mode"),
+            ]),
+            Line::from(vec![
+                Span::styled("Esc", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(": Close menu"),
+            ]),
+        ];
+
+        let help_paragraph = Paragraph::new(help_text);
+        f.render_widget(help_paragraph, inner_area);
+    }
+
+    // Render help popup if needed
+    if app.show_help {
+        render_help_popup(f);
+    }
 }
